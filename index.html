@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Conversor CLP · VES · USD_BCV · USDT</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="card">
+        <h1>Conversor de monedas</h1>
+        <p>Base interna: <strong>USDT</strong> (USD_BCV y USDT no son equivalentes).</p>
+      </header>
+
+      <section class="card converter-grid" aria-label="Conversor">
+        <div class="field">
+          <label for="amount">Monto</label>
+          <input id="amount" type="number" step="any" min="0" placeholder="Ej: 100" />
+        </div>
+
+        <div class="field">
+          <label for="fromCurrency">Moneda origen</label>
+          <select id="fromCurrency"></select>
+        </div>
+
+        <div class="field">
+          <label for="toCurrency">Moneda destino</label>
+          <select id="toCurrency"></select>
+        </div>
+
+        <div class="actions">
+          <button id="convertBtn" class="btn primary">Convertir</button>
+          <button id="swapBtn" class="btn">Intercambiar</button>
+          <button id="refreshRatesBtn" class="btn">Actualizar tasas</button>
+          <button id="modifyManualBtn" class="btn">Modificar tasas manuales</button>
+          <button id="resetManualBtn" class="btn danger">Resetear tasas manuales</button>
+        </div>
+      </section>
+
+      <section class="card result" aria-live="polite">
+        <h2>Resultado</h2>
+        <p id="resultValue" class="result-value">—</p>
+        <div id="calcDetail" class="calc-detail">Sin cálculo aún.</div>
+      </section>
+
+      <section class="card">
+        <h2>Mensajes</h2>
+        <div id="messages" class="messages"></div>
+      </section>
+
+      <section class="card">
+        <h2>Panel de tasas</h2>
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th>Tasa</th>
+                <th>Valor</th>
+                <th>Fuente</th>
+                <th>Fecha/Hora</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody id="ratesTableBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="manualPanel" class="card hidden">
+        <h2>Modo manual de tasas</h2>
+        <p>
+          No hay datos web ni cache suficientes. Ingresa tasas manuales para continuar.
+        </p>
+
+        <div class="manual-grid">
+          <div class="field">
+            <label for="manualVesUsdt">VES por USDT (guardado/manual)</label>
+            <input id="manualVesUsdt" type="number" step="any" min="0" />
+          </div>
+
+          <div class="field">
+            <label for="manualClpUsdt">CLP por USDT (CoinGecko o manual)</label>
+            <input id="manualClpUsdt" type="number" step="any" min="0" />
+          </div>
+
+          <div class="field">
+            <label for="manualVesUsdBcv">VES por USD_BCV (BCV o manual)</label>
+            <input id="manualVesUsdBcv" type="number" step="any" min="0" />
+          </div>
+        </div>
+
+        <button id="saveManualBtn" class="btn primary">Guardar tasas manuales</button>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
