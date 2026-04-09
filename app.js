@@ -9,9 +9,9 @@
   const REQUEST_TIMEOUT_MS = 10000;
 
   // Claves de tasas primarias obligatorias
-  // - VES por USDT (Binance)
-  // - CLP por USDT (Binance)
-  // - VES por USD_BCV (BCV)
+  // - VES por USDT (manual/cache)
+  // - CLP por USDT (manual/cache)
+  // - VES por USD_BCV (BCV/manual/cache)
   const RATE_KEYS = {
     VES_PER_USDT: 'VES_PER_USDT',
     CLP_PER_USDT: 'CLP_PER_USDT',
@@ -37,18 +37,8 @@
       return `Ocurrió un problema: ${message}`;
     }
 
-    function safeExecute(fn, fallback = null) {
-      try {
-        return fn();
-      } catch (error) {
-        console.error(error);
-        return fallback;
-      }
-    }
-
     return {
-      toUserMessage,
-      safeExecute
+      toUserMessage
     };
   })();
 
@@ -148,22 +138,9 @@
       }
     }
 
-    async function fetchBinanceSymbol(symbol) {
-      const url = `https://api.binance.com/api/v3/ticker/price?symbol=${encodeURIComponent(symbol)}`;
-      const response = await fetchWithTimeout(url);
-      const json = await response.json();
-
-      const price = Number(json?.price);
-      if (!ValidationModule.isPositiveNumber(price)) {
-        throw new Error(`Respuesta inválida de Binance para ${symbol}`);
-      }
-
-      return price;
-    }
-
     async function fetchVesPerUsdBcv() {
-      // Endpoint público BCV (puede cambiar o bloquearse por CORS en algunos entornos).
-      // Se maneja robustez con fallback a cache/manual.
+      // Endpoint público BCV / referencia oficial intermedia
+      // Puede fallar por CORS o disponibilidad; se resuelve con fallback a cache/manual.
       const url = 'https://ve.dolarapi.com/v1/dolares/oficial';
       const response = await fetchWithTimeout(url);
       const json = await response.json();
@@ -192,33 +169,32 @@
       const usdBcvPerUsdt = vesPerUsdt / vesPerUsdBcv;
 
       primaryRates[RATE_KEYS.USD_BCV_PER_USDT] = {
-        ...buildRateRow(usdBcvPerUsdt, 'Derivada (VES/USDT ÷ VES/USD_BCV)', primaryRates[RATE_KEYS.VES_PER_USDT].status),
+        ...buildRateRow(
+          usdBcvPerUsdt,
+          'Derivada (VES/USDT ÷ VES/USD_BCV)',
+          primaryRates[RATE_KEYS.VES_PER_USDT].status
+        ),
         timestamp: new Date().toISOString()
       };
 
       return primaryRates;
     }
 
-   async function fetchAllPrimaryRates() {
-  const result = {};
-  const errors = [];
+    async function fetchAllPrimaryRates() {
+      const result = {};
+      const errors = [];
 
-  // 🔴 Binance deshabilitado (no existen los símbolos)
-  errors.push({
-    key: 'Binance',
-    error: new Error('Binance Spot no dispone de los pares USDTVES ni USDTCLP')
-  });
+      // Solo intentar BCV en esta versión.
+      try {
+        const value = await fetchVesPerUsdBcv();
+        result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
+      } catch (error) {
+        errors.push({ key: RATE_KEYS.VES_PER_USD_BCV, error });
+      }
 
-  // 🔵 Solo intentar BCV
-  try {
-    const value = await fetchVesPerUsdBcv();
-    result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
-  } catch (error) {
-    errors.push({ key: RATE_KEYS.VES_PER_USD_BCV, error });
-  }
+      return { rates: result, errors };
+    }
 
-  return { rates: result, errors };
-}
     function enrichWithCacheIfNeeded(webRates, cacheRates) {
       const merged = { ...webRates };
       const missingKeys = [RATE_KEYS.VES_PER_USDT, RATE_KEYS.CLP_PER_USDT, RATE_KEYS.VES_PER_USD_BCV].filter(
@@ -335,7 +311,6 @@
       div.textContent = text;
       els.messages.prepend(div);
 
-      // Mantener solo últimos 6 mensajes
       while (els.messages.children.length > 6) {
         els.messages.removeChild(els.messages.lastChild);
       }
@@ -435,6 +410,11 @@
     async function loadRatesWithFallback() {
       UIModule.clearMessages();
 
+      UIModule.showMessage(
+        'warning',
+        'Las tasas VES por USDT y CLP por USDT no se consultan automáticamente en esta versión. Se usarán valores guardados o tasas manuales.'
+      );
+
       const cachePayload = StorageModule.loadRates();
       const cacheRates = cachePayload?.rates || null;
 
@@ -454,7 +434,7 @@
       }
 
       const merged = RatesModule.enrichWithCacheIfNeeded(webRates, cacheRates);
-      let finalRates = ensureDerivedAndValid(merged);
+      const finalRates = ensureDerivedAndValid(merged);
 
       if (finalRates) {
         state.rates = finalRates;
@@ -462,9 +442,9 @@
 
         const hasCacheRows = Object.values(finalRates).some((r) => r.status === 'cache');
         if (hasCacheRows) {
-          UIModule.showMessage('warning', 'Se usaron una o más tasas desde cache por fallo de fuente web.');
+          UIModule.showMessage('warning', 'Se usaron una o más tasas desde cache por fallo de fuente web o ausencia de actualización automática.');
         } else {
-          UIModule.showMessage('success', 'Tasas actualizadas desde web correctamente.');
+          UIModule.showMessage('success', 'Tasas disponibles correctamente.');
         }
 
         UIModule.toggleManualPanel(false);
@@ -472,11 +452,8 @@
         return;
       }
 
-      // Si no alcanzan web+cache, activar manual
       UIModule.showMessage('error', 'No hay datos suficientes desde web/cache. Activa modo manual para continuar.');
       UIModule.toggleManualPanel(true);
-
-      // Si había cache parcial, mostrarlo igual en tabla para transparencia
       UIModule.renderRates(merged);
     }
 
