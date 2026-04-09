@@ -199,35 +199,26 @@
       return primaryRates;
     }
 
-    async function fetchAllPrimaryRates() {
-      const result = {};
-      const errors = [];
+   async function fetchAllPrimaryRates() {
+  const result = {};
+  const errors = [];
 
-      // Intento de cada fuente por separado para tolerar fallos parciales.
-      try {
-        const value = await fetchBinanceSymbol('USDTVES');
-        result[RATE_KEYS.VES_PER_USDT] = buildRateRow(value, 'Binance', 'web');
-      } catch (error) {
-        errors.push({ key: RATE_KEYS.VES_PER_USDT, error });
-      }
+  // 🔴 Binance deshabilitado (no existen los símbolos)
+  errors.push({
+    key: 'Binance',
+    error: new Error('Binance Spot no dispone de los pares USDTVES ni USDTCLP')
+  });
 
-      try {
-        const value = await fetchBinanceSymbol('USDTCLP');
-        result[RATE_KEYS.CLP_PER_USDT] = buildRateRow(value, 'Binance', 'web');
-      } catch (error) {
-        errors.push({ key: RATE_KEYS.CLP_PER_USDT, error });
-      }
+  // 🔵 Solo intentar BCV
+  try {
+    const value = await fetchVesPerUsdBcv();
+    result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
+  } catch (error) {
+    errors.push({ key: RATE_KEYS.VES_PER_USD_BCV, error });
+  }
 
-      try {
-        const value = await fetchVesPerUsdBcv();
-        result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
-      } catch (error) {
-        errors.push({ key: RATE_KEYS.VES_PER_USD_BCV, error });
-      }
-
-      return { rates: result, errors };
-    }
-
+  return { rates: result, errors };
+}
     function enrichWithCacheIfNeeded(webRates, cacheRates) {
       const merged = { ...webRates };
       const missingKeys = [RATE_KEYS.VES_PER_USDT, RATE_KEYS.CLP_PER_USDT, RATE_KEYS.VES_PER_USD_BCV].filter(
