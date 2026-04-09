@@ -6,18 +6,21 @@
   // =========================
   const CURRENCIES = ['CLP', 'VES', 'USD_BCV', 'USDT'];
   const STORAGE_KEY = 'currency_converter_rates_v1';
+  const STORAGE_MANUAL_KEY = 'currency_converter_manual_rates_v1';
   const REQUEST_TIMEOUT_MS = 10000;
 
   // Claves de tasas primarias obligatorias
-  // - VES por USDT (manual/cache)
-  // - CLP por USDT (manual/cache)
-  // - VES por USD_BCV (BCV/manual/cache)
+  // - VES por USDT (cache/manual por ahora)
+  // - CLP por USDT (CoinGecko)
+  // - VES por USD_BCV (BCV)
   const RATE_KEYS = {
     VES_PER_USDT: 'VES_PER_USDT',
     CLP_PER_USDT: 'CLP_PER_USDT',
     VES_PER_USD_BCV: 'VES_PER_USD_BCV',
     USD_BCV_PER_USDT: 'USD_BCV_PER_USDT' // Derivada: VES_PER_USDT / VES_PER_USD_BCV
   };
+
+  const PRIMARY_KEYS = [RATE_KEYS.VES_PER_USDT, RATE_KEYS.CLP_PER_USDT, RATE_KEYS.VES_PER_USD_BCV];
 
   // =========================
   // Módulo de manejo de errores
@@ -53,13 +56,7 @@
     function isValidRatePayload(ratePayload) {
       if (!ratePayload || typeof ratePayload !== 'object') return false;
 
-      const requiredKeys = [
-        RATE_KEYS.VES_PER_USDT,
-        RATE_KEYS.CLP_PER_USDT,
-        RATE_KEYS.VES_PER_USD_BCV
-      ];
-
-      return requiredKeys.every((key) => {
+      return PRIMARY_KEYS.every((key) => {
         const row = ratePayload[key];
         return row && isPositiveNumber(Number(row.value)) && typeof row.source === 'string' && row.source.length > 0;
       });
@@ -84,33 +81,58 @@
   // Módulo de almacenamiento
   // =========================
   const StorageModule = (() => {
+    function parseSafe(raw) {
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch (error) {
+        console.warn('No se pudo parsear JSON en localStorage:', error);
+        return null;
+      }
+    }
+
     function saveRates(ratesMap) {
       const payload = {
         savedAt: new Date().toISOString(),
         rates: ratesMap
       };
-
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
     }
 
     function loadRates() {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return null;
-
-      try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        if (!parsed.rates || typeof parsed.rates !== 'object') return null;
-        return parsed;
-      } catch (error) {
-        console.warn('No se pudo parsear cache de tasas:', error);
+      const parsed = parseSafe(localStorage.getItem(STORAGE_KEY));
+      if (!parsed || typeof parsed !== 'object' || !parsed.rates || typeof parsed.rates !== 'object') {
         return null;
       }
+      return parsed;
+    }
+
+    function saveManualRates(primaryManualRates) {
+      const payload = {
+        savedAt: new Date().toISOString(),
+        rates: primaryManualRates
+      };
+      localStorage.setItem(STORAGE_MANUAL_KEY, JSON.stringify(payload));
+    }
+
+    function loadManualRates() {
+      const parsed = parseSafe(localStorage.getItem(STORAGE_MANUAL_KEY));
+      if (!parsed || typeof parsed !== 'object' || !parsed.rates || typeof parsed.rates !== 'object') {
+        return null;
+      }
+      return parsed;
+    }
+
+    function clearManualRates() {
+      localStorage.removeItem(STORAGE_MANUAL_KEY);
     }
 
     return {
       saveRates,
-      loadRates
+      loadRates,
+      saveManualRates,
+      loadManualRates,
+      clearManualRates
     };
   })();
 
@@ -123,31 +145,39 @@
       const timer = setTimeout(() => controller.abort(), timeoutMs);
 
       try {
-        const response = await fetch(url, {
-          ...options,
-          signal: controller.signal
-        });
-
+        const response = await fetch(url, { ...options, signal: controller.signal });
         if (!response.ok) {
           throw new Error(`HTTP ${response.status} al consultar ${url}`);
         }
-
         return response;
       } finally {
         clearTimeout(timer);
       }
     }
 
+    async function fetchClpPerUsdtFromCoinGecko() {
+      // Endpoint simple price para Tether en CLP.
+      const url = 'https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=clp';
+      const response = await fetchWithTimeout(url);
+      const json = await response.json();
+
+      const value = Number(json?.tether?.clp);
+      if (!ValidationModule.isPositiveNumber(value)) {
+        throw new Error('Respuesta inválida de CoinGecko (CLP por USDT).');
+      }
+
+      return value;
+    }
+
     async function fetchVesPerUsdBcv() {
-      // Endpoint público BCV / referencia oficial intermedia
-      // Puede fallar por CORS o disponibilidad; se resuelve con fallback a cache/manual.
+      // Se conserva la fuente actual para VES por USD_BCV.
       const url = 'https://ve.dolarapi.com/v1/dolares/oficial';
       const response = await fetchWithTimeout(url);
       const json = await response.json();
 
       const value = Number(json?.promedio || json?.valor || json?.price);
       if (!ValidationModule.isPositiveNumber(value)) {
-        throw new Error('Respuesta inválida de BCV (VES por USD_BCV)');
+        throw new Error('Respuesta inválida de BCV (VES por USD_BCV).');
       }
 
       return value;
@@ -165,26 +195,28 @@
     function computeDerivedRates(primaryRates) {
       const vesPerUsdt = Number(primaryRates[RATE_KEYS.VES_PER_USDT].value);
       const vesPerUsdBcv = Number(primaryRates[RATE_KEYS.VES_PER_USD_BCV].value);
-
       const usdBcvPerUsdt = vesPerUsdt / vesPerUsdBcv;
 
       primaryRates[RATE_KEYS.USD_BCV_PER_USDT] = {
-        ...buildRateRow(
-          usdBcvPerUsdt,
-          'Derivada (VES/USDT ÷ VES/USD_BCV)',
-          primaryRates[RATE_KEYS.VES_PER_USDT].status
-        ),
+        ...buildRateRow(usdBcvPerUsdt, 'Derivada (VES/USDT ÷ VES/USD_BCV)', primaryRates[RATE_KEYS.VES_PER_USDT].status),
         timestamp: new Date().toISOString()
       };
 
       return primaryRates;
     }
 
-    async function fetchAllPrimaryRates() {
+    async function fetchAvailableWebRates() {
       const result = {};
       const errors = [];
 
-      // Solo intentar BCV en esta versión.
+      // NO se consulta VES/USDT en API por ahora.
+      try {
+        const value = await fetchClpPerUsdtFromCoinGecko();
+        result[RATE_KEYS.CLP_PER_USDT] = buildRateRow(value, 'CoinGecko', 'web');
+      } catch (error) {
+        errors.push({ key: RATE_KEYS.CLP_PER_USDT, error });
+      }
+
       try {
         const value = await fetchVesPerUsdBcv();
         result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
@@ -195,18 +227,17 @@
       return { rates: result, errors };
     }
 
-    function enrichWithCacheIfNeeded(webRates, cacheRates) {
-      const merged = { ...webRates };
-      const missingKeys = [RATE_KEYS.VES_PER_USDT, RATE_KEYS.CLP_PER_USDT, RATE_KEYS.VES_PER_USD_BCV].filter(
-        (key) => !merged[key]
-      );
+    function fillMissingFromSource(baseRates, fallbackRates, newStatus) {
+      const merged = { ...baseRates };
 
-      for (const key of missingKeys) {
-        const cachedRow = cacheRates?.[key];
-        if (cachedRow && ValidationModule.isPositiveNumber(Number(cachedRow.value))) {
+      for (const key of PRIMARY_KEYS) {
+        if (merged[key]) continue;
+
+        const row = fallbackRates?.[key];
+        if (row && ValidationModule.isPositiveNumber(Number(row.value))) {
           merged[key] = {
-            ...cachedRow,
-            status: 'cache',
+            ...row,
+            status: newStatus,
             timestamp: new Date().toISOString()
           };
         }
@@ -225,10 +256,11 @@
     }
 
     return {
-      fetchAllPrimaryRates,
+      fetchAvailableWebRates,
       computeDerivedRates,
-      enrichWithCacheIfNeeded,
-      buildFromManual
+      fillMissingFromSource,
+      buildFromManual,
+      buildRateRow
     };
   })();
 
@@ -255,16 +287,10 @@
     function convert(amount, fromCurrency, toCurrency, rates) {
       const amountUsdt = toUsdt(amount, fromCurrency, rates);
       const result = fromUsdt(amountUsdt, toCurrency, rates);
-
-      return {
-        amountUsdt,
-        result
-      };
+      return { amountUsdt, result };
     }
 
-    return {
-      convert
-    };
+    return { convert };
   })();
 
   // =========================
@@ -278,6 +304,8 @@
       convertBtn: document.getElementById('convertBtn'),
       swapBtn: document.getElementById('swapBtn'),
       refreshRatesBtn: document.getElementById('refreshRatesBtn'),
+      modifyManualBtn: document.getElementById('modifyManualBtn'),
+      resetManualBtn: document.getElementById('resetManualBtn'),
       resultValue: document.getElementById('resultValue'),
       calcDetail: document.getElementById('calcDetail'),
       messages: document.getElementById('messages'),
@@ -311,7 +339,7 @@
       div.textContent = text;
       els.messages.prepend(div);
 
-      while (els.messages.children.length > 6) {
+      while (els.messages.children.length > 7) {
         els.messages.removeChild(els.messages.lastChild);
       }
     }
@@ -331,8 +359,7 @@
       els.ratesTableBody.innerHTML = '';
 
       for (const row of rows) {
-        const data = rates[row.key];
-
+        const data = rates?.[row.key];
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${row.label}</td>
@@ -341,7 +368,6 @@
           <td>${data?.timestamp ? new Date(data.timestamp).toLocaleString() : '—'}</td>
           <td>${data?.status || '—'}</td>
         `;
-
         els.ratesTableBody.appendChild(tr);
       }
     }
@@ -363,10 +389,23 @@
       els.manualPanel.classList.toggle('hidden', !show);
     }
 
+    function setManualInputs(primaryRates) {
+      els.manualVesUsdt.value = primaryRates?.[RATE_KEYS.VES_PER_USDT]?.value ?? '';
+      els.manualClpUsdt.value = primaryRates?.[RATE_KEYS.CLP_PER_USDT]?.value ?? '';
+      els.manualVesUsdBcv.value = primaryRates?.[RATE_KEYS.VES_PER_USD_BCV]?.value ?? '';
+    }
+
+    function readManualInputs() {
+      return {
+        vesPerUsdt: Number(els.manualVesUsdt.value),
+        clpPerUsdt: Number(els.manualClpUsdt.value),
+        vesPerUsdBcv: Number(els.manualVesUsdBcv.value)
+      };
+    }
+
     function formatNumber(value, maxDecimals = 6) {
       const numeric = Number(value);
       if (!Number.isFinite(numeric)) return '—';
-
       return new Intl.NumberFormat('es-CL', {
         minimumFractionDigits: 0,
         maximumFractionDigits: maxDecimals
@@ -381,7 +420,9 @@
       renderRates,
       showResult,
       resetResult,
-      toggleManualPanel
+      toggleManualPanel,
+      setManualInputs,
+      readManualInputs
     };
   })();
 
@@ -393,36 +434,61 @@
       rates: null
     };
 
-    function ensureDerivedAndValid(rates) {
+    function getPrimaryFromRates(rates) {
+      if (!rates) return null;
       const primary = {
         [RATE_KEYS.VES_PER_USDT]: rates[RATE_KEYS.VES_PER_USDT],
         [RATE_KEYS.CLP_PER_USDT]: rates[RATE_KEYS.CLP_PER_USDT],
         [RATE_KEYS.VES_PER_USD_BCV]: rates[RATE_KEYS.VES_PER_USD_BCV]
       };
+      return primary;
+    }
 
+    function ensureDerivedAndValid(rates) {
+      const primary = getPrimaryFromRates(rates);
       if (!ValidationModule.isValidRatePayload(primary)) {
         return null;
       }
-
       return RatesModule.computeDerivedRates(primary);
     }
 
-    async function loadRatesWithFallback() {
-      UIModule.clearMessages();
+    function hasAnyManualPrimarySaved() {
+      const manualPayload = StorageModule.loadManualRates();
+      return Boolean(manualPayload?.rates);
+    }
+
+    function useManualPanelWithPrefill(basePrimaryRates = null) {
+      UIModule.toggleManualPanel(true);
+
+      if (basePrimaryRates) {
+        UIModule.setManualInputs(basePrimaryRates);
+        return;
+      }
+
+      const manualSaved = StorageModule.loadManualRates()?.rates;
+      const fromState = getPrimaryFromRates(state.rates);
+      UIModule.setManualInputs(manualSaved || fromState || null);
+    }
+
+    async function loadRatesWithFallback(options = {}) {
+      const { keepMessages = false, prefillManualOnFailure = true } = options;
+      if (!keepMessages) UIModule.clearMessages();
 
       UIModule.showMessage(
         'warning',
-        'Las tasas VES por USDT y CLP por USDT no se consultan automáticamente en esta versión. Se usarán valores guardados o tasas manuales.'
+        'VES por USDT se mantiene por ahora desde valores guardados (cache) o manuales; no se consulta API para esa tasa.'
       );
 
       const cachePayload = StorageModule.loadRates();
       const cacheRates = cachePayload?.rates || null;
+      const manualPayload = StorageModule.loadManualRates();
+      const manualRates = manualPayload?.rates || null;
 
       let webRates = {};
       let webErrors = [];
 
       try {
-        const fetched = await RatesModule.fetchAllPrimaryRates();
+        const fetched = await RatesModule.fetchAvailableWebRates();
         webRates = fetched.rates;
         webErrors = fetched.errors;
       } catch (error) {
@@ -433,18 +499,24 @@
         UIModule.showMessage('warning', `[${item.key}] ${ErrorModule.toUserMessage(item.error)}`);
       }
 
-      const merged = RatesModule.enrichWithCacheIfNeeded(webRates, cacheRates);
-      const finalRates = ensureDerivedAndValid(merged);
+      // Orden de fallback: web -> cache -> manual guardado
+      let merged = RatesModule.fillMissingFromSource(webRates, cacheRates, 'cache');
+      merged = RatesModule.fillMissingFromSource(merged, manualRates, 'manual');
 
+      const finalRates = ensureDerivedAndValid(merged);
       if (finalRates) {
         state.rates = finalRates;
         StorageModule.saveRates(finalRates);
 
-        const hasCacheRows = Object.values(finalRates).some((r) => r.status === 'cache');
-        if (hasCacheRows) {
-          UIModule.showMessage('warning', 'Se usaron una o más tasas desde cache por fallo de fuente web o ausencia de actualización automática.');
+        const hasCacheRows = PRIMARY_KEYS.some((key) => finalRates[key]?.status === 'cache');
+        const hasManualRows = PRIMARY_KEYS.some((key) => finalRates[key]?.status === 'manual');
+
+        if (hasManualRows) {
+          UIModule.showMessage('warning', 'Se usaron tasas manuales para completar datos faltantes.');
+        } else if (hasCacheRows) {
+          UIModule.showMessage('warning', 'Se usaron una o más tasas desde cache por fallo de fuente web.');
         } else {
-          UIModule.showMessage('success', 'Tasas disponibles correctamente.');
+          UIModule.showMessage('success', 'Tasas actualizadas desde web correctamente.');
         }
 
         UIModule.toggleManualPanel(false);
@@ -452,9 +524,15 @@
         return;
       }
 
-      UIModule.showMessage('error', 'No hay datos suficientes desde web/cache. Activa modo manual para continuar.');
-      UIModule.toggleManualPanel(true);
+      UIModule.showMessage('error', 'No hay datos suficientes desde web/cache/manual guardado. Usa modo manual.');
       UIModule.renderRates(merged);
+
+      if (prefillManualOnFailure) {
+        useManualPanelWithPrefill(merged);
+      } else {
+        UIModule.toggleManualPanel(true);
+        UIModule.setManualInputs(null);
+      }
     }
 
     function convertCurrent() {
@@ -490,32 +568,55 @@
     }
 
     function handleManualSave() {
-      const vesPerUsdt = Number(UIModule.els.manualVesUsdt.value);
-      const clpPerUsdt = Number(UIModule.els.manualClpUsdt.value);
-      const vesPerUsdBcv = Number(UIModule.els.manualVesUsdBcv.value);
+      const values = UIModule.readManualInputs();
 
       if (
-        !ValidationModule.isPositiveNumber(vesPerUsdt) ||
-        !ValidationModule.isPositiveNumber(clpPerUsdt) ||
-        !ValidationModule.isPositiveNumber(vesPerUsdBcv)
+        !ValidationModule.isPositiveNumber(values.vesPerUsdt) ||
+        !ValidationModule.isPositiveNumber(values.clpPerUsdt) ||
+        !ValidationModule.isPositiveNumber(values.vesPerUsdBcv)
       ) {
         UIModule.showMessage('error', 'En modo manual, todas las tasas deben ser números positivos.');
         return;
       }
 
-      const manualRates = RatesModule.buildFromManual({ vesPerUsdt, clpPerUsdt, vesPerUsdBcv });
-      state.rates = RatesModule.computeDerivedRates(manualRates);
+      const manualPrimary = RatesModule.buildFromManual(values);
+      StorageModule.saveManualRates(manualPrimary);
+
+      state.rates = RatesModule.computeDerivedRates({ ...manualPrimary });
       StorageModule.saveRates(state.rates);
       UIModule.renderRates(state.rates);
       UIModule.toggleManualPanel(false);
       UIModule.showMessage('success', 'Tasas manuales guardadas y activas.');
     }
 
+    function handleModifyManual() {
+      const manualSaved = StorageModule.loadManualRates()?.rates;
+      const primaryFromState = getPrimaryFromRates(state.rates);
+      const hasManualActive = PRIMARY_KEYS.some((key) => state.rates?.[key]?.status === 'manual');
+
+      if (hasManualActive || manualSaved) {
+        useManualPanelWithPrefill(primaryFromState || manualSaved);
+      } else {
+        // Mantiene comportamiento útil aunque no haya manual previo.
+        useManualPanelWithPrefill(primaryFromState);
+      }
+
+      UIModule.showMessage('success', 'Panel manual listo para modificar tasas.');
+    }
+
+    async function handleResetManual() {
+      StorageModule.clearManualRates();
+      UIModule.showMessage('warning', 'Tasas manuales guardadas eliminadas. Reintentando carga web/cache...');
+      await loadRatesWithFallback({ keepMessages: true, prefillManualOnFailure: false });
+    }
+
     function bindEvents() {
       UIModule.els.convertBtn.addEventListener('click', convertCurrent);
       UIModule.els.swapBtn.addEventListener('click', swapCurrencies);
-      UIModule.els.refreshRatesBtn.addEventListener('click', loadRatesWithFallback);
+      UIModule.els.refreshRatesBtn.addEventListener('click', () => loadRatesWithFallback());
       UIModule.els.saveManualBtn.addEventListener('click', handleManualSave);
+      UIModule.els.modifyManualBtn.addEventListener('click', handleModifyManual);
+      UIModule.els.resetManualBtn.addEventListener('click', handleResetManual);
 
       UIModule.els.amount.addEventListener('keydown', (event) => {
         if (event.key === 'Enter') convertCurrent();
@@ -525,12 +626,16 @@
     async function init() {
       UIModule.populateCurrencySelectors();
       bindEvents();
-      await loadRatesWithFallback();
+
+      // Si ya hay manual guardado, se mantiene disponible para edición inmediata.
+      if (hasAnyManualPrimarySaved()) {
+        UIModule.showMessage('warning', 'Hay tasas manuales guardadas. Puedes editarlas con “Modificar tasas manuales”.');
+      }
+
+      await loadRatesWithFallback({ keepMessages: true });
     }
 
-    return {
-      init
-    };
+    return { init };
   })();
 
   App.init();

@@ -33,6 +33,8 @@
           <button id="convertBtn" class="btn primary">Convertir</button>
           <button id="swapBtn" class="btn">Intercambiar</button>
           <button id="refreshRatesBtn" class="btn">Actualizar tasas</button>
+          <button id="modifyManualBtn" class="btn">Modificar tasas manuales</button>
+          <button id="resetManualBtn" class="btn danger">Resetear tasas manuales</button>
         </div>
       </section>
 
@@ -73,17 +75,17 @@
 
         <div class="manual-grid">
           <div class="field">
-            <label for="manualVesUsdt">VES por USDT (Binance)</label>
+            <label for="manualVesUsdt">VES por USDT (guardado/manual)</label>
             <input id="manualVesUsdt" type="number" step="any" min="0" />
           </div>
 
           <div class="field">
-            <label for="manualClpUsdt">CLP por USDT (Binance)</label>
+            <label for="manualClpUsdt">CLP por USDT (CoinGecko o manual)</label>
             <input id="manualClpUsdt" type="number" step="any" min="0" />
           </div>
 
           <div class="field">
-            <label for="manualVesUsdBcv">VES por USD_BCV (BCV)</label>
+            <label for="manualVesUsdBcv">VES por USD_BCV (BCV o manual)</label>
             <input id="manualVesUsdBcv" type="number" step="any" min="0" />
           </div>
         </div>

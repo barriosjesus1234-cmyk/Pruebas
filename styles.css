@@ -88,6 +88,12 @@ select {
   border-color: var(--primary);
 }
 
+.btn.danger {
+  background: #fff5f5;
+  color: var(--error);
+  border-color: #fecaca;
+}
+
 .result-value {
   margin: 0;
   font-size: 2rem;
