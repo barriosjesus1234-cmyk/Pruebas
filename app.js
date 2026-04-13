@@ -154,7 +154,19 @@
         clearTimeout(timer);
       }
     }
+async function fetchVesPerUsdtFromWorker() {
+  const url = 'https://binance-ves-proxy.barriosjesus1234.workers.dev';
+  const response = await fetchWithTimeout(url);
+  const json = await response.json();
 
+  const value = Number(json?.value);
+
+  if (!ValidationModule.isPositiveNumber(value)) {
+    throw new Error('Respuesta inválida del proxy Binance P2P (VES por USDT).');
+  }
+
+  return value;
+}
     async function fetchClpPerUsdtFromCoinGecko() {
       // Endpoint simple price para Tether en CLP.
       const url = 'https://api.coingecko.com/api/v3/simple/price?ids=tether&vs_currencies=clp';
@@ -205,28 +217,40 @@
       return primaryRates;
     }
 
-    async function fetchAvailableWebRates() {
-      const result = {};
-      const errors = [];
+   async function fetchAvailableWebRates() {
+  const result = {};
+  const errors = [];
 
-      // NO se consulta VES/USDT en API por ahora.
-      try {
-        const value = await fetchClpPerUsdtFromCoinGecko();
-        result[RATE_KEYS.CLP_PER_USDT] = buildRateRow(value, 'CoinGecko', 'web');
-      } catch (error) {
-        errors.push({ key: RATE_KEYS.CLP_PER_USDT, error });
-      }
+  // 🔥 VES/USDT desde Binance P2P (tu worker)
+  try {
+    const value = await fetchVesPerUsdtFromWorker();
+    result[RATE_KEYS.VES_PER_USDT] = buildRateRow(
+      value,
+      'Binance P2P (promedio top 5)',
+      'web'
+    );
+  } catch (error) {
+    errors.push({ key: RATE_KEYS.VES_PER_USDT, error });
+  }
 
-      try {
-        const value = await fetchVesPerUsdBcv();
-        result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
-      } catch (error) {
-        errors.push({ key: RATE_KEYS.VES_PER_USD_BCV, error });
-      }
+  // CLP/USDT desde CoinGecko
+  try {
+    const value = await fetchClpPerUsdtFromCoinGecko();
+    result[RATE_KEYS.CLP_PER_USDT] = buildRateRow(value, 'CoinGecko', 'web');
+  } catch (error) {
+    errors.push({ key: RATE_KEYS.CLP_PER_USDT, error });
+  }
 
-      return { rates: result, errors };
-    }
+  // VES/USD_BCV desde BCV
+  try {
+    const value = await fetchVesPerUsdBcv();
+    result[RATE_KEYS.VES_PER_USD_BCV] = buildRateRow(value, 'BCV', 'web');
+  } catch (error) {
+    errors.push({ key: RATE_KEYS.VES_PER_USD_BCV, error });
+  }
 
+  return { rates: result, errors };
+}
     function fillMissingFromSource(baseRates, fallbackRates, newStatus) {
       const merged = { ...baseRates };
 
